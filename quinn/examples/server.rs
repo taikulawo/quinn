@@ -14,6 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use proto::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use tokio::task::LocalSet;
 use tracing::{error, info, info_span};
 use tracing_futures::Instrument as _;
 
@@ -46,27 +47,31 @@ struct Opt {
     #[clap(long = "connection-limit")]
     connection_limit: Option<usize>,
 }
-
-fn main() {
+#[tokio::main]
+async fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .finish(),
     )
     .unwrap();
-    let opt = Opt::parse();
-    let code = {
-        if let Err(e) = run(opt) {
-            eprintln!("ERROR: {e}");
-            1
-        } else {
-            0
-        }
-    };
-    ::std::process::exit(code);
+    let local = LocalSet::new();
+    local
+        .run_until(async {
+            let opt = Opt::parse();
+            let code = {
+                if let Err(e) = run(opt).await {
+                    eprintln!("ERROR: {e}");
+                    1
+                } else {
+                    0
+                }
+            };
+            ::std::process::exit(code);
+        })
+        .await;
 }
 
-#[tokio::main]
 async fn run(options: Opt) -> Result<()> {
     let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
         let key = fs::read(key_path).context("failed to read private key")?;
@@ -153,7 +158,7 @@ async fn run(options: Opt) -> Result<()> {
         } else {
             info!("accepting connection");
             let fut = handle_connection(root.clone(), conn);
-            tokio::spawn(async move {
+            tokio::task::spawn_local(async move {
                 if let Err(e) = fut.await {
                     error!("connection failed: {reason}", reason = e.to_string())
                 }
@@ -193,7 +198,7 @@ async fn handle_connection(root: Arc<Path>, conn: quinn::Incoming) -> Result<()>
                 Ok(s) => s,
             };
             let fut = handle_request(root.clone(), stream);
-            tokio::spawn(
+            tokio::task::spawn_local(
                 async move {
                     if let Err(e) = fut.await {
                         error!("failed: {reason}", reason = e.to_string());

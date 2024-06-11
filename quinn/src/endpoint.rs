@@ -125,7 +125,7 @@ impl Endpoint {
             runtime.clone(),
         );
         let driver = EndpointDriver(rc.clone());
-        runtime.spawn(Box::pin(
+        runtime.spawn_local(Box::pin(
             async {
                 if let Err(e) = driver.await {
                     tracing::error!("I/O error: {}", e);
@@ -370,7 +370,7 @@ pub(crate) struct EndpointInner {
 }
 
 impl EndpointInner {
-    pub(crate) fn accept(
+    pub(crate) async fn accept(
         &self,
         incoming: proto::Incoming,
         server_config: Option<Arc<ServerConfig>>,
@@ -380,7 +380,7 @@ impl EndpointInner {
         let now = state.runtime.now();
         match state
             .inner
-            .accept(incoming, now, &mut response_buffer, server_config)
+            .accept(incoming, now, &mut response_buffer, server_config).await
         {
             Ok((handle, conn)) => {
                 let socket = state.socket.clone();

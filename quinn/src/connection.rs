@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     fmt,
-    future::Future,
+    future::{poll_fn, Future},
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -61,9 +61,9 @@ impl Connecting {
         );
 
         let driver = ConnectionDriver(conn.clone());
-        runtime.spawn(Box::pin(
-            async {
-                if let Err(e) = driver.await {
+        runtime.spawn_local(Box::pin(
+            async move {
+                if let Err(e) = driver.poll().await {
                     tracing::error!("I/O error: {e}");
                 }
             }
@@ -216,41 +216,40 @@ impl Future for ZeroRttAccepted {
 #[must_use = "connection drivers must be spawned for their connections to function"]
 #[derive(Debug)]
 struct ConnectionDriver(ConnectionRef);
-
-impl Future for ConnectionDriver {
-    type Output = Result<(), io::Error>;
-
-    #[allow(unused_mut)] // MSRV
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+impl ConnectionDriver {
+    async fn poll(&self) -> io::Result<()> {
         let conn = &mut *self.0.state.lock("poll");
 
         let span = debug_span!("drive", id = conn.handle.0);
         let _guard = span.enter();
 
-        if let Err(e) = conn.process_conn_events(&self.0.shared, cx) {
+        if let Err(e) = conn.process_conn_events(&self.0.shared).await {
             conn.terminate(e, &self.0.shared);
-            return Poll::Ready(Ok(()));
+            return Ok(());
         }
-        let mut keep_going = conn.drive_transmit(cx)?;
-        // If a timer expires, there might be more to transmit. When we transmit something, we
-        // might need to reset a timer. Hence, we must loop until neither happens.
-        keep_going |= conn.drive_timer(cx);
-        conn.forward_endpoint_events();
-        conn.forward_app_events(&self.0.shared);
+        poll_fn(|cx| {
+            let mut keep_going = conn.drive_transmit(cx)?;
+            // If a timer expires, there might be more to transmit. When we transmit something, we
+            // might need to reset a timer. Hence, we must loop until neither happens.
+            keep_going |= conn.drive_timer(cx);
+            conn.forward_endpoint_events();
+            conn.forward_app_events(&self.0.shared);
 
-        if !conn.inner.is_drained() {
-            if keep_going {
-                // If the connection hasn't processed all tasks, schedule it again
-                cx.waker().wake_by_ref();
-            } else {
-                conn.driver = Some(cx.waker().clone());
+            if !conn.inner.is_drained() {
+                if keep_going {
+                    // If the connection hasn't processed all tasks, schedule it again
+                    cx.waker().wake_by_ref();
+                } else {
+                    conn.driver = Some(cx.waker().clone());
+                }
+                return Poll::Pending;
             }
-            return Poll::Pending;
-        }
-        if conn.error.is_none() {
-            unreachable!("drained connections always have an error");
-        }
-        Poll::Ready(Ok(()))
+            if conn.error.is_none() {
+                unreachable!("drained connections always have an error");
+            }
+            Poll::Ready(Ok(()))
+        })
+        .await
     }
 }
 
@@ -1010,33 +1009,26 @@ impl State {
     }
 
     /// If this returns `Err`, the endpoint is dead, so the driver should exit immediately.
-    fn process_conn_events(
-        &mut self,
-        shared: &Shared,
-        cx: &mut Context,
-    ) -> Result<(), ConnectionError> {
+    async fn process_conn_events(&mut self, shared: &Shared) -> Result<(), ConnectionError> {
         loop {
-            match self.conn_events.poll_recv(cx) {
-                Poll::Ready(Some(ConnectionEvent::Rebind(socket))) => {
+            match self.conn_events.recv().await {
+                Some(ConnectionEvent::Rebind(socket)) => {
                     self.socket = socket;
                     self.io_poller = self.socket.clone().create_io_poller();
                     self.inner.local_address_changed();
                 }
-                Poll::Ready(Some(ConnectionEvent::Proto(event))) => {
-                    self.inner.handle_event(event);
+                Some(ConnectionEvent::Proto(event)) => {
+                    self.inner.handle_event(event).await;
                 }
-                Poll::Ready(Some(ConnectionEvent::Close { reason, error_code })) => {
+                Some(ConnectionEvent::Close { reason, error_code }) => {
                     self.close(error_code, reason, shared);
                 }
-                Poll::Ready(None) => {
+                None => {
                     return Err(ConnectionError::TransportError(proto::TransportError {
                         code: proto::TransportErrorCode::INTERNAL_ERROR,
                         frame: None,
                         reason: "endpoint driver future was dropped".to_string(),
                     }));
-                }
-                Poll::Pending => {
-                    return Ok(());
                 }
             }
         }

@@ -551,7 +551,7 @@ impl Endpoint {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
-    pub fn accept(
+    pub async fn accept(
         &mut self,
         mut incoming: Incoming,
         now: Instant,
@@ -662,12 +662,12 @@ impl Endpoint {
             packet_number,
             incoming.packet,
             incoming.rest,
-        ) {
+        ).await {
             Ok(()) => {
                 trace!(id = ch.0, icid = %dst_cid, "new connection");
 
                 for event in incoming_buffer.datagrams {
-                    conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)))
+                    conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event))).await
                 }
 
                 Ok((ch, conn))

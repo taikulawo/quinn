@@ -9,7 +9,7 @@ use crc::Crc;
 use quinn::{ConnectionError, ReadError, StoppedError, TransportConfig, WriteError};
 use rand::{self, RngCore};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use tokio::runtime::Builder;
+use tokio::{runtime::Builder, task};
 
 struct Shared {
     errors: Vec<ConnectionError>,
@@ -50,14 +50,15 @@ fn connect_n_nodes_to_1_and_send_1mb_data() {
                 }
                 Ok(())
             };
-            tokio::spawn(async move {
+            tokio::task::spawn_local(async move {
                 if let Err(e) = task.await {
                     shared.lock().unwrap().errors.push(e);
                 }
             });
         }
     };
-    runtime.spawn(read_incoming_data);
+    let local = task::LocalSet::new();
+    local.spawn_local(read_incoming_data);
 
     let client_cfg = configure_connector(listener_cert);
 
@@ -72,7 +73,7 @@ fn connect_n_nodes_to_1_and_send_1mb_data() {
             write_to_peer(conn, data).await?;
             Ok(())
         };
-        runtime.spawn(async move {
+        local.spawn_local(async move {
             if let Err(e) = task.await {
                 use quinn::ConnectionError::*;
                 match e {

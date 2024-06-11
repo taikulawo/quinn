@@ -17,7 +17,12 @@ use super::{AsyncTimer, AsyncUdpSocket, Runtime, UdpPollHelper};
 /// A Quinn runtime for Tokio
 #[derive(Debug)]
 pub struct TokioRuntime;
-
+impl TokioRuntime {
+    /// create tokio !Send runtime
+    pub fn new() -> TokioRuntime {
+        TokioRuntime {}
+    }
+}
 impl Runtime for TokioRuntime {
     fn new_timer(&self, t: Instant) -> Pin<Box<dyn AsyncTimer>> {
         Box::pin(sleep_until(t.into()))
@@ -25,6 +30,10 @@ impl Runtime for TokioRuntime {
 
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) {
         tokio::spawn(future);
+    }
+    /// Should call in run_until
+    fn spawn_local(&self, future: Pin<Box<dyn Future<Output = ()>>>) {
+        tokio::task::spawn_local(future);
     }
 
     fn wrap_udp_socket(&self, sock: std::net::UdpSocket) -> io::Result<Arc<dyn AsyncUdpSocket>> {

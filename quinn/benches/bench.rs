@@ -6,7 +6,10 @@ use std::{
 
 use bencher::{benchmark_group, benchmark_main, Bencher};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use tokio::runtime::{Builder, Runtime};
+use tokio::{
+    runtime::{Builder, Runtime},
+    task,
+};
 use tracing::error_span;
 use tracing_futures::Instrument as _;
 
@@ -51,7 +54,8 @@ fn send_data(bench: &mut Bencher, data: &'static [u8], concurrent_streams: usize
 
         for _ in 0..concurrent_streams {
             let client = client.clone();
-            handles.push(runtime.spawn(async move {
+            let local = task::LocalSet::new();
+            handles.push(local.spawn_local(async move {
                 let mut stream = client.open_uni().await.unwrap();
                 stream.write_all(data).await.unwrap();
                 stream.finish().unwrap();
@@ -108,11 +112,12 @@ impl Context {
                     Default::default(),
                     Some(config),
                     sock,
-                    Arc::new(TokioRuntime),
+                    Arc::new(TokioRuntime::new()),
                 )
                 .unwrap()
             };
-            let handle = runtime.spawn(
+            let local = task::LocalSet::new();
+            let handle = local.spawn_local(
                 async move {
                     let connection = endpoint
                         .accept()
@@ -122,7 +127,7 @@ impl Context {
                         .expect("connect");
 
                     while let Ok(mut stream) = connection.accept_uni().await {
-                        tokio::spawn(async move {
+                        task::spawn_local(async move {
                             while stream
                                 .read_chunk(usize::MAX, false)
                                 .await

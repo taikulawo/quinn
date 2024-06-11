@@ -1040,7 +1040,7 @@ impl Connection {
     /// Will execute protocol logic upon receipt of a connection event, in turn preparing signals
     /// (including application `Event`s, `EndpointEvent`s and outgoing datagrams) that should be
     /// extracted through the relevant methods.
-    pub fn handle_event(&mut self, event: ConnectionEvent) {
+    pub async fn handle_event(&mut self, event: ConnectionEvent) {
         use self::ConnectionEventInner::*;
         match event.0 {
             Datagram(DatagramConnectionEvent {
@@ -1066,7 +1066,7 @@ impl Connection {
                 self.stats.udp_rx.bytes += first_decode.len() as u64;
                 let data_len = first_decode.len();
 
-                self.handle_decode(now, remote, ecn, first_decode);
+                self.handle_decode(now, remote, ecn, first_decode).await;
                 // The current `path` might have changed inside `handle_decode`,
                 // since the packet could have triggered a migration. Make sure
                 // the data received is accounted for the most recent path by accessing
@@ -1075,7 +1075,7 @@ impl Connection {
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;
-                    self.handle_coalesced(now, remote, ecn, data);
+                    self.handle_coalesced(now, remote, ecn, data).await;
                 }
 
                 if was_anti_amplification_blocked {
@@ -1872,7 +1872,7 @@ impl Connection {
     ///
     /// Decrypting the first packet in the `Endpoint` allows stateless packet handling to be more
     /// efficient.
-    pub(crate) fn handle_first_packet(
+    pub(crate) async fn handle_first_packet(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -1903,9 +1903,9 @@ impl Connection {
             false,
         );
 
-        self.process_decrypted_packet(now, remote, Some(packet_number), packet.into())?;
+        self.process_decrypted_packet(now, remote, Some(packet_number), packet.into()).await?;
         if let Some(data) = remaining {
-            self.handle_coalesced(now, remote, ecn, data);
+            self.handle_coalesced(now, remote, ecn, data).await;
         }
 
         if self.highest_space == SpaceId::Initial && self.state.is_handshake() {
@@ -1960,7 +1960,7 @@ impl Connection {
         self.zero_rtt_crypto = Some(ZeroRttCrypto { header, packet });
     }
 
-    fn read_crypto(
+    async fn read_crypto(
         &mut self,
         space: SpaceId,
         crypto: &frame::Crypto,
@@ -2002,7 +2002,7 @@ impl Connection {
             .insert(crypto.offset, crypto.data.clone(), payload_len);
         while let Some(chunk) = space.crypto_stream.read(usize::MAX, true) {
             trace!("consumed {} CRYPTO bytes", chunk.bytes.len());
-            if self.crypto.read_handshake(&chunk.bytes)? {
+            if self.crypto.read_handshake(&chunk.bytes).await? {
                 self.events.push_back(Event::HandshakeDataReady);
             }
         }
@@ -2093,7 +2093,7 @@ impl Connection {
         self.set_loss_detection_timer(now)
     }
 
-    fn handle_coalesced(
+    async fn handle_coalesced(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -2111,7 +2111,7 @@ impl Connection {
             ) {
                 Ok((partial_decode, rest)) => {
                     remaining = rest;
-                    self.handle_decode(now, remote, ecn, partial_decode);
+                    self.handle_decode(now, remote, ecn, partial_decode).await;
                 }
                 Err(e) => {
                     trace!("malformed header: {}", e);
@@ -2121,7 +2121,7 @@ impl Connection {
         }
     }
 
-    fn handle_decode(
+    async fn handle_decode(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -2134,11 +2134,11 @@ impl Connection {
             self.zero_rtt_crypto.as_ref(),
             self.peer_params.stateless_reset_token,
         ) {
-            self.handle_packet(now, remote, ecn, decoded.packet, decoded.stateless_reset);
+            self.handle_packet(now, remote, ecn, decoded.packet, decoded.stateless_reset).await;
         }
     }
 
-    fn handle_packet(
+    async fn handle_packet(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -2238,7 +2238,7 @@ impl Connection {
                             packet.header.is_1rtt(),
                         );
                     }
-                    self.process_decrypted_packet(now, remote, number, packet)
+                    self.process_decrypted_packet(now, remote, number, packet).await
                 }
             }
         };
@@ -2290,7 +2290,7 @@ impl Connection {
         }
     }
 
-    fn process_decrypted_packet(
+    async fn process_decrypted_packet(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -2300,8 +2300,8 @@ impl Connection {
         let state = match self.state {
             State::Established => {
                 match packet.header.space() {
-                    SpaceId::Data => self.process_payload(now, remote, number.unwrap(), packet)?,
-                    _ => self.process_early_payload(now, packet)?,
+                    SpaceId::Data => self.process_payload(now, remote, number.unwrap(), packet).await?,
+                    _ => self.process_early_payload(now, packet).await?,
                 }
                 return Ok(());
             }
@@ -2417,7 +2417,7 @@ impl Connection {
                 }
                 self.path.validated = true;
 
-                self.process_early_payload(now, packet)?;
+                self.process_early_payload(now, packet).await?;
                 if self.state.is_closed() {
                     return Ok(());
                 }
@@ -2496,7 +2496,7 @@ impl Connection {
                 }
 
                 let starting_space = self.highest_space;
-                self.process_early_payload(now, packet)?;
+                self.process_early_payload(now, packet).await?;
 
                 if self.side.is_server()
                     && starting_space == SpaceId::Initial
@@ -2520,7 +2520,7 @@ impl Connection {
                 ty: LongType::ZeroRtt,
                 ..
             } => {
-                self.process_payload(now, remote, number.unwrap(), packet)?;
+                self.process_payload(now, remote, number.unwrap(), packet).await?;
                 Ok(())
             }
             Header::VersionNegotiate { .. } => {
@@ -2547,7 +2547,7 @@ impl Connection {
     }
 
     /// Process an Initial or Handshake packet payload
-    fn process_early_payload(
+    async fn process_early_payload(
         &mut self,
         now: Instant,
         packet: Packet,
@@ -2571,7 +2571,7 @@ impl Connection {
             match frame {
                 Frame::Padding | Frame::Ping => {}
                 Frame::Crypto(frame) => {
-                    self.read_crypto(packet.header.space(), &frame, payload_len)?;
+                    self.read_crypto(packet.header.space(), &frame, payload_len).await?;
                 }
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, packet.header.space(), ack)?;
@@ -2601,7 +2601,7 @@ impl Connection {
         Ok(())
     }
 
-    fn process_payload(
+    async fn process_payload(
         &mut self,
         now: Instant,
         remote: SocketAddr,
@@ -2663,7 +2663,7 @@ impl Connection {
             }
             match frame {
                 Frame::Crypto(frame) => {
-                    self.read_crypto(SpaceId::Data, &frame, payload_len)?;
+                    self.read_crypto(SpaceId::Data, &frame, payload_len).await?;
                 }
                 Frame::Stream(frame) => {
                     if self.streams.received(frame, payload_len)?.should_transmit() {
