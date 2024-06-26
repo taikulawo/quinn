@@ -15,6 +15,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use proto::crypto::rustls::QuicClientConfig;
 use rustls::pki_types::CertificateDer;
+use tokio::task::LocalSet;
 use tracing::{error, info};
 use url::Url;
 
@@ -46,8 +47,8 @@ struct Opt {
     #[clap(long = "bind", default_value = "[::]:0")]
     bind: SocketAddr,
 }
-
-fn main() {
+#[tokio::main]
+async fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -55,18 +56,22 @@ fn main() {
     )
     .unwrap();
     let opt = Opt::parse();
-    let code = {
-        if let Err(e) = run(opt) {
-            eprintln!("ERROR: {e}");
-            1
-        } else {
-            0
-        }
-    };
-    ::std::process::exit(code);
+    let local = LocalSet::new();
+    local
+        .run_until(async {
+            let code = {
+                if let Err(e) = run(opt).await {
+                    eprintln!("ERROR: {e}");
+                    1
+                } else {
+                    0
+                }
+            };
+            ::std::process::exit(code);
+        })
+        .await;
 }
 
-#[tokio::main]
 async fn run(options: Opt) -> Result<()> {
     let url = options.url;
     let url_host = strip_ipv6_brackets(url.host_str().unwrap());
@@ -135,7 +140,7 @@ async fn run(options: Opt) -> Result<()> {
     let response_start = Instant::now();
     eprintln!("request sent at {:?}", response_start - start);
     let resp = recv
-        .read_to_end(usize::max_value())
+        .read_to_end(usize::MAX)
         .await
         .map_err(|e| anyhow!("failed to read response: {}", e))?;
     let duration = response_start.elapsed();

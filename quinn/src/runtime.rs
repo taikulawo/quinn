@@ -12,11 +12,13 @@ use std::{
 use udp::{RecvMeta, Transmit};
 
 /// Abstracts I/O and timer operations for runtime independence
-pub trait Runtime: Send + Sync + Debug + 'static {
+pub trait Runtime: Debug + 'static {
     /// Construct a timer that will expire at `i`
     fn new_timer(&self, i: Instant) -> Pin<Box<dyn AsyncTimer>>;
     /// Drive `future` to completion in the background
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>);
+    /// Drive !Send `future` to completion in the background
+    fn spawn_local(&self, future: Pin<Box<dyn Future<Output = ()>>>);
     /// Convert `t` into the socket type used by this runtime
     fn wrap_udp_socket(&self, t: std::net::UdpSocket) -> io::Result<Arc<dyn AsyncUdpSocket>>;
     /// Look up the current time
@@ -167,7 +169,7 @@ pub fn default_runtime() -> Option<Arc<dyn Runtime>> {
     #[cfg(feature = "runtime-tokio")]
     {
         if ::tokio::runtime::Handle::try_current().is_ok() {
-            return Some(Arc::new(TokioRuntime));
+            return Some(Arc::new(TokioRuntime::new()));
         }
     }
 

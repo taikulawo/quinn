@@ -43,7 +43,9 @@ fn run_server(
 ) -> Result<CertificateDer<'static>, Box<dyn Error + Send + Sync + 'static>> {
     let (endpoint, server_cert) = make_server_endpoint(addr)?;
     // accept a single connection
-    tokio::spawn(async move {
+    let s = tokio::task::LocalSet::new();
+    
+    s.spawn_local(async move {
         let connection = endpoint.accept().await.unwrap().await.unwrap();
         println!(
             "[server] incoming connection: addr={}",

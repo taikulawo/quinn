@@ -1,5 +1,6 @@
 use std::{any::Any, io, str, sync::Arc};
 
+use async_trait::async_trait;
 use bytes::BytesMut;
 use ring::aead;
 pub use rustls::Error;
@@ -45,7 +46,7 @@ impl TlsSession {
         }
     }
 }
-
+#[async_trait(?Send)]
 impl crypto::Session for TlsSession {
     fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys {
         initial_keys(self.version, dst_cid, side, &self.suite)
@@ -91,7 +92,7 @@ impl crypto::Session for TlsSession {
         self.inner.is_handshaking()
     }
 
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
+    async fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| {
             if let Some(alert) = self.inner.alert() {
                 TransportError {

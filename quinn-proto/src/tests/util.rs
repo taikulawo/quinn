@@ -461,13 +461,13 @@ impl TestEndpoint {
         self.outbound.extend(self.delayed.drain(..));
     }
 
-    pub(super) fn try_accept(
+    pub(super) async fn try_accept(
         &mut self,
         incoming: Incoming,
         now: Instant,
     ) -> Result<ConnectionHandle, ConnectionError> {
         let mut buf = Vec::new();
-        match self.endpoint.accept(incoming, now, &mut buf, None) {
+        match self.endpoint.accept(incoming, now, &mut buf, None).await {
             Ok((ch, conn)) => {
                 self.connections.insert(ch, conn);
                 self.accepted = Some(Ok(ch));

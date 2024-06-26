@@ -10,6 +10,7 @@
 
 use std::{any::Any, str, sync::Arc};
 
+use async_trait::async_trait;
 use bytes::BytesMut;
 
 use crate::{
@@ -25,6 +26,7 @@ pub(crate) mod ring;
 pub mod rustls;
 
 /// A cryptographic session (commonly TLS)
+#[async_trait(?Send)]
 pub trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys;
@@ -60,7 +62,7 @@ pub trait Session: Send + Sync + 'static {
     /// handshake data is available. Future calls will always return false.
     ///
     /// On success, returns `true` iff `self.handshake_data()` has been populated.
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError>;
+    async fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError>;
 
     /// The peer's QUIC transport parameters
     ///

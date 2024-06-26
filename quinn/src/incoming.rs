@@ -24,9 +24,9 @@ impl Incoming {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
-    pub fn accept(mut self) -> Result<Connecting, ConnectionError> {
+    pub async fn accept(mut self) -> Result<Connecting, ConnectionError> {
         let state = self.0.take().unwrap();
-        state.endpoint.accept(state.inner, None)
+        state.endpoint.accept(state.inner, None).await
     }
 
     /// Accept this incoming connection using a custom configuration.
@@ -34,12 +34,15 @@ impl Incoming {
     /// See [`accept()`] for more details.
     ///
     /// [`accept()`]: Incoming::accept
-    pub fn accept_with(
+    pub async fn accept_with(
         mut self,
         server_config: Arc<ServerConfig>,
     ) -> Result<Connecting, ConnectionError> {
         let state = self.0.take().unwrap();
-        state.endpoint.accept(state.inner, Some(server_config))
+        state
+            .endpoint
+            .accept(state.inner, Some(server_config))
+            .await
     }
 
     /// Reject this incoming connection attempt
@@ -116,14 +119,29 @@ impl RetryError {
 }
 
 /// Basic adapter to let [`Incoming`] be `await`-ed like a [`Connecting`]
-#[derive(Debug)]
-pub struct IncomingFuture(Result<Connecting, ConnectionError>);
+pub struct IncomingFuture {
+    output: Option<Result<Connecting, ConnectionError>>,
+    fut: Option<Pin<Box<dyn Future<Output = Result<Connecting, ConnectionError>>>>>,
+}
+
+impl std::fmt::Debug for IncomingFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IncomingFuture")
+            .field("output", &self.output)
+            .finish()
+    }
+}
 
 impl Future for IncomingFuture {
     type Output = Result<Connection, ConnectionError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        match &mut self.0 {
+        if let Some(f) = self.fut.as_mut() {
+            self.output = Some(ready!(f.as_mut().poll(cx)));
+            // drop it
+            self.fut.take();
+        };
+        match &mut self.output.as_mut().unwrap() {
             Ok(ref mut connecting) => Pin::new(connecting).poll(cx),
             Err(e) => Poll::Ready(Err(e.clone())),
         }
@@ -135,6 +153,9 @@ impl IntoFuture for Incoming {
     type IntoFuture = IncomingFuture;
 
     fn into_future(self) -> Self::IntoFuture {
-        IncomingFuture(self.accept())
+        IncomingFuture {
+            fut: Some(Box::pin(self.accept())),
+            output: None,
+        }
     }
 }
