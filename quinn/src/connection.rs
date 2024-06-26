@@ -223,7 +223,8 @@ impl ConnectionDriver {
         let span = debug_span!("drive", id = conn.handle.0);
         let _guard = span.enter();
 
-        if let Err(e) = conn.process_conn_events(&self.0.shared).await {
+        // 不能await，如果pending需要继续
+        if let Err(e) = conn.process_conn_events(&self.0.shared) {
             conn.terminate(e, &self.0.shared);
             return Ok(());
         }
