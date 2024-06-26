@@ -14,7 +14,10 @@ use bytes::Bytes;
 use pin_project_lite::pin_project;
 use rustc_hash::FxHashMap;
 use thiserror::Error;
-use tokio::sync::{futures::Notified, mpsc, oneshot, Notify};
+use tokio::{
+    pin,
+    sync::{futures::Notified, mpsc, oneshot, Notify},
+};
 use tracing::{debug_span, Instrument, Span};
 
 use crate::{
@@ -217,40 +220,41 @@ impl Future for ZeroRttAccepted {
 #[derive(Debug)]
 struct ConnectionDriver(ConnectionRef);
 impl ConnectionDriver {
-    async fn poll(&self) -> io::Result<()> {
+    fn poll(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let conn = &mut *self.0.state.lock("poll");
 
         let span = debug_span!("drive", id = conn.handle.0);
         let _guard = span.enter();
-
-        // 不能await，如果pending需要继续
-        if let Err(e) = conn.process_conn_events(&self.0.shared) {
-            conn.terminate(e, &self.0.shared);
-            return Ok(());
+        let fut1 = conn.process_conn_events(&self.0.shared);
+        pin!(fut1);
+        match fut1.as_mut().poll(cx) {
+            Poll::Pending => {}
+            Poll::Ready(res) => match res {
+                Err(err) => {}
+                _ => {}
+            },
         }
-        poll_fn(|cx| {
-            let mut keep_going = conn.drive_transmit(cx)?;
-            // If a timer expires, there might be more to transmit. When we transmit something, we
-            // might need to reset a timer. Hence, we must loop until neither happens.
-            keep_going |= conn.drive_timer(cx);
-            conn.forward_endpoint_events();
-            conn.forward_app_events(&self.0.shared);
+        drop(fut1);
+        let mut keep_going = conn.drive_transmit(cx)?;
+        // If a timer expires, there might be more to transmit. When we transmit something, we
+        // might need to reset a timer. Hence, we must loop until neither happens.
+        keep_going |= conn.drive_timer(cx);
+        conn.forward_endpoint_events();
+        conn.forward_app_events(&self.0.shared);
 
-            if !conn.inner.is_drained() {
-                if keep_going {
-                    // If the connection hasn't processed all tasks, schedule it again
-                    cx.waker().wake_by_ref();
-                } else {
-                    conn.driver = Some(cx.waker().clone());
-                }
-                return Poll::Pending;
+        if !conn.inner.is_drained() {
+            if keep_going {
+                // If the connection hasn't processed all tasks, schedule it again
+                cx.waker().wake_by_ref();
+            } else {
+                conn.driver = Some(cx.waker().clone());
             }
-            if conn.error.is_none() {
-                unreachable!("drained connections always have an error");
-            }
-            Poll::Ready(Ok(()))
-        })
-        .await
+            return Poll::Pending;
+        }
+        if conn.error.is_none() {
+            unreachable!("drained connections always have an error");
+        }
+        Poll::Ready(Ok(()))
     }
 }
 
